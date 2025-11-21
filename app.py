@@ -191,18 +191,23 @@ st.table(pd.DataFrame(data, columns=['Tier', '협상계수(k)', '조정률', '�
 # ==========================================
 st.divider()
 st.subheader("2️⃣ 4D Interactive Visualization")
-st.markdown("아래 슬라이더를 움직여 결함 균질도(α)와 평탄도 산포(σ)가 단가에 미치는 영향을 확인하세요.")
+st.markdown("아래 슬라이더를 움직여 **결함 균질도(α)**와 **평탄도 산포(σ)**가 단가에 미치는 영향을 확인하세요.")
 
 # 4D Plot용 데이터 그리드 (미리 생성)
 l_vals = np.linspace(0.01, 0.10, 20)
 m_vals = np.linspace(1.2, 3.0, 20)
 L_3d, M_3d = np.meshgrid(l_vals, m_vals)
 
-# 슬라이더 (Streamlit Native Widget)
-c_s1, c_s2, c_s3 = st.columns(3)
-s_alpha = c_s1.slider("Cluster Parameter (α)", 1.0, 10.0, 4.2, 0.1)
-s_sigma = c_s2.slider("Flatness Sigma (σ)", 0.3, 1.25, 0.78, 0.05)
-s_k = c_s3.slider("Negotiation Factor (k)", 0.1, 1.0, 0.5, 0.1)
+# 🔹 [New] 파라미터 슬라이더와 시각 각도 슬라이더를 분리하여 배치
+col_param1, col_param2, col_param3 = st.columns(3)
+s_alpha = col_param1.slider("Cluster Parameter (α)", 1.0, 10.0, 4.2, 0.1)
+s_sigma = col_param2.slider("Flatness Sigma (σ)", 0.3, 1.25, 0.78, 0.05)
+s_k = col_param3.slider("Negotiation Factor (k)", 0.1, 1.0, 0.5, 0.1)
+
+st.caption("👀 **시각 각도 조절 (View Angle)**")
+col_view1, col_view2 = st.columns(2)
+view_azim = col_view1.slider("회전 (Azimuth)", 0, 360, 315, 5) # 기본값 315도
+view_elev = col_view2.slider("높이 (Elevation)", 0, 90, 25, 5)   # 기본값 25도
 
 # 3D Plotting
 fig = plt.figure(figsize=(10, 8))
@@ -221,7 +226,6 @@ for i in range(L_3d.shape[0]):
 surf = ax.plot_surface(L_3d, M_3d, Z_3d, cmap='coolwarm', edgecolor='none', alpha=0.85, vmin=-100, vmax=20)
 
 # 기준점 표시 (Baseline)
-# 현재 슬라이더 값이 Baseline 근처일 때만 별표 표시
 if np.isclose(s_alpha, REF_PARAMS['alpha'], atol=0.5) and np.isclose(s_sigma, REF_PARAMS['sigma'], atol=0.1):
     ax.scatter(REF_PARAMS['lambda'], REF_PARAMS['mu'], 0, color='yellow', s=200, marker='*', edgecolors='black', label='Baseline', zorder=10)
     ax.legend()
@@ -232,10 +236,8 @@ ax.set_zlabel('ΔPrice (%)')
 ax.set_title(f'Price Sensitivity Surface\n(α={s_alpha}, σ={s_sigma}, k={s_k})', fontsize=14)
 ax.set_zlim(-100, 20)
 
-# 🔹 요청하신 각도 적용 (왼쪽으로 90도 회전: 225도 -> 315도)
-# 원본 코드: azim=135 -> 90도 회전 요청 -> 225. 
-# 사용자가 "왼쪽으로 90도"라고 했고, "ax.view_init(elev=25, azim=315)" 코드를 주셨으므로 315로 설정합니다.
-ax.view_init(elev=25, azim=315)
+# 🔹 [Changed] 사용자가 슬라이더로 조절한 각도 적용
+ax.view_init(elev=view_elev, azim=view_azim)
 
 fig.colorbar(surf, shrink=0.5, aspect=10, pad=0.1, label='Price Adj (%)')
 st.pyplot(fig)
