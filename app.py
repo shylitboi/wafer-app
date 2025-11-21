@@ -124,7 +124,6 @@ with st.sidebar:
 st.title("🤖 웨이퍼 단가 계산기")
 st.markdown(f"""
 **기준 파라미터 (Fixed Baseline):** `λ={REF_PARAMS['lambda']}`, `α={REF_PARAMS['alpha']}`, `μ={REF_PARAMS['mu']}`, `σ={REF_PARAMS['sigma']}`  
-*(질문 시 언급하지 않은 값은 항상 이 기준값으로 초기화됩니다.)*
 """)
 
 # 입력창
@@ -192,7 +191,7 @@ st.table(pd.DataFrame(data, columns=['Tier', '협상계수(k)', '조정률', '�
 # ==========================================
 st.divider()
 st.subheader("2️⃣ 4D Interactive Visualization")
-st.markdown("아래 슬라이더를 움직여 **결함 균질도(α)**와 **평탄도 산포(σ)**가 단가에 미치는 영향을 확인하세요.")
+st.markdown("아래 슬라이더를 움직여 결함 균질도(α)와 평탄도 산포(σ)가 단가에 미치는 영향을 확인하세요.")
 
 # 4D Plot용 데이터 그리드 (미리 생성)
 l_vals = np.linspace(0.01, 0.10, 20)
