@@ -1,7 +1,10 @@
+%%writefile app.py
 import streamlit as st
 import pandas as pd
 import numpy as np
+import matplotlib.pyplot as plt
 from scipy.stats import nbinom, binom, norm
+from mpl_toolkits.mplot3d import Axes3D
 from openai import OpenAI
 import json
 import datetime
@@ -18,37 +21,38 @@ except:
 client = OpenAI(api_key=api_key)
 
 # ==========================================
-# 1. 품질 비용 계산 로직 (Math Backend)
+# 1. 고정된 기준 파라미터 (Immutable Baseline)
 # ==========================================
-# 기준 파라미터 (Baseline)
+# 사용자가 무슨 값을 입력하든, 비교의 기준은 항상 이 값들입니다.
 REF_PARAMS = {
-    'lambda': 0.035, 'alpha': 4.2,
-    'mu': 2.11004, 'sigma': 0.78286
+    'lambda': 0.035,  # 결함 밀도
+    'alpha': 4.2,     # 클러스터링
+    'mu': 2.11004,    # 평탄도 평균
+    'sigma': 0.78286  # 평탄도 산포
 }
+
+# 공통 상수
 A, CUTOFF, USL_FLAT = 706.9, 71, 3.5
 LOT_SIZE, N_SAMPLE = 25, 5
 ALPHA_TEST, BETA_TEST = 0.01, 0.02
 COSTS = {'opp': 2500, 'scrap': 900, 'escape': 17100, 'inspect': 30}
 
-def calculate_cost(lambda_d, alpha_d, mu_f, sigma_f):
-    """로트당 총 품질 비용 계산 (일반화 모델)"""
-    # 1. 결함 불량 확률
+# 비용 계산 함수
+def calculate_total_cost(lambda_d, alpha_d, mu_f, sigma_f):
+    """4개 변수를 받아 로트당 총 비용을 계산"""
+    # 1. 확률 계산
     mu_val = lambda_d * A
     p_nb = alpha_d / (alpha_d + mu_val)
     p_defect = 1 - nbinom.cdf(CUTOFF - 1, alpha_d, p_nb)
-
-    # 2. 평탄도 불량 확률
     p_flat = 1 - norm.cdf(USL_FLAT, loc=mu_f, scale=sigma_f)
-
-    # 3. 통합 불량 확률
     p_total = 1 - (1 - p_defect) * (1 - p_flat)
 
-    # 4. 검사 판정
+    # 2. 검사 판정
     p_prime = (1 - p_total) * ALPHA_TEST + p_total * (1 - BETA_TEST)
     P_accept = binom.cdf(0, N_SAMPLE, p_prime)
     P_reject = 1 - P_accept
 
-    # 5. 비용 합산
+    # 3. 비용 합산 (일반화 모델)
     cost = (
         P_reject * (1 - p_total) * LOT_SIZE * COSTS['opp'] +
         P_reject * p_total * LOT_SIZE * COSTS['scrap'] +
@@ -57,146 +61,183 @@ def calculate_cost(lambda_d, alpha_d, mu_f, sigma_f):
     )
     return cost
 
-# 기준 비용 계산
-REF_COST = calculate_cost(REF_PARAMS['lambda'], REF_PARAMS['alpha'], REF_PARAMS['mu'], REF_PARAMS['sigma'])
+# 기준 비용 미리 계산 (고정값)
+COST_REF = calculate_total_cost(REF_PARAMS['lambda'], REF_PARAMS['alpha'], REF_PARAMS['mu'], REF_PARAMS['sigma'])
 
 # ==========================================
-# 2. LLM 파라미터 추출기 (개선됨)
+# 2. LLM 파라미터 추출기 (항상 기준값 베이스)
 # ==========================================
 def extract_params_from_text(user_text):
     """
-    사용자 입력에서 변경된 파라미터만 추출.
-    언급되지 않은 파라미터는 null로 반환하도록 유도.
+    사용자 입력에서 파라미터를 추출하되, 
+    언급되지 않은 값은 무조건 '기준 파라미터(REF_PARAMS)'를 따름.
     """
-    system_prompt = """
-    You are a parameter extraction assistant.
-    Extract the following parameters from the user's input:
-    - "lambda" (Defect Density)
-    - "alpha" (Cluster Parameter)
-    - "mu" (Mean TTV)
-    - "sigma" (Std Dev TTV)
+    system_prompt = f"""
+    You are a data extraction assistant.
+    
+    [Baseline Parameters]
+    - lambda: {REF_PARAMS['lambda']}
+    - alpha: {REF_PARAMS['alpha']}
+    - mu: {REF_PARAMS['mu']}
+    - sigma: {REF_PARAMS['sigma']}
 
     Rules:
-    1. Extract ONLY the values explicitly mentioned by the user.
-    2. If a parameter is NOT mentioned, set its value to null.
-    3. Do NOT infer or guess values from context like "standard" or "baseline". Just return null.
-    4. Return a JSON object. Example: {"lambda": 0.05, "alpha": null, "mu": null, "sigma": 0.78}
+    1. Extract values from the user's input.
+    2. If a parameter is mentioned, use the user's value.
+    3. If a parameter is NOT mentioned, use the [Baseline Parameters] value above. (DO NOT use previous context)
+    4. Return a JSON object with keys: "lambda", "alpha", "mu", "sigma".
     """
 
-    try:
-        response = client.chat.completions.create(
-            model="gpt-3.5-turbo",
-            messages=[
-                {"role": "system", "content": system_prompt},
-                {"role": "user", "content": user_text}
-            ],
-            response_format={"type": "json_object"},
-            temperature=0  # 환각 방지를 위해 0으로 설정
-        )
-        return json.loads(response.choices[0].message.content)
-    except Exception as e:
-        st.error(f"AI 추출 오류: {e}")
-        return {}
+    response = client.chat.completions.create(
+        model="gpt-3.5-turbo",
+        messages=[
+            {"role": "system", "content": system_prompt},
+            {"role": "user", "content": user_text}
+        ],
+        response_format={"type": "json_object"},
+        temperature=0
+    )
+    return json.loads(response.choices[0].message.content)
 
 # ==========================================
 # 3. Streamlit UI 구성
 # ==========================================
 st.set_page_config(page_title="웨이퍼 단가 계산기", layout="wide")
 
-# 세션 상태 초기화
-if 'params' not in st.session_state:
-    st.session_state['params'] = REF_PARAMS.copy()
 if 'history' not in st.session_state:
     st.session_state['history'] = []
+if 'current_params' not in st.session_state:
+    st.session_state['current_params'] = REF_PARAMS.copy()
 
-# 사이드바
+# [사이드바]
 with st.sidebar:
     st.header("📜 질문 기록")
-    if st.button("초기화 (Reset)"):
+    if st.button("기록 초기화"):
         st.session_state['history'] = []
-        st.session_state['params'] = REF_PARAMS.copy()
+        st.session_state['current_params'] = REF_PARAMS.copy()
         st.rerun()
     
     for i, h in enumerate(reversed(st.session_state['history'])):
         st.text(f"[{h['time']}] {h['query'][:15]}...")
         if i > 4: break
 
-# 메인 화면
-st.title("🤖 AI 웨이퍼 단가 계산기")
-st.info("💡 예시: '알파는 5.0, 람다는 0.02로 설정해줘' (나머지는 기존 값 유지)")
+# [메인 화면]
+st.title("🤖 웨이퍼 단가 계산기")
+st.markdown(f"""
+**기준 파라미터 (Fixed Baseline):** `λ={REF_PARAMS['lambda']}`, `α={REF_PARAMS['alpha']}`, `μ={REF_PARAMS['mu']}`, `σ={REF_PARAMS['sigma']}`  
+*(질문 시 언급하지 않은 값은 항상 이 기준값으로 초기화됩니다.)*
+""")
 
 # 입력창
-user_input = st.text_area("질문을 입력하세요", height=80)
+user_input = st.text_area("질문을 입력하세요 (예: '알파만 5.0으로 바꾸면?')", height=80)
 calc_btn = st.button("계산하기")
 
 if calc_btn and user_input:
-    with st.spinner("AI가 파라미터를 분석 중입니다..."):
-        # 1. AI에게 추출 요청 (변경된 것만 null 아닌 값으로 옴)
-        extracted = extract_params_from_text(user_input)
-        
-        # 2. 기존 파라미터에 덮어쓰기 (Merge)
-        current_params = st.session_state['params']
-        updated_params = current_params.copy()
-        
-        changes = []
-        for key, val in extracted.items():
-            if val is not None:
-                updated_params[key] = float(val) # 숫자 변환 확인
-                changes.append(f"{key}: {val}")
-        
-        # 3. 상태 업데이트
-        st.session_state['params'] = updated_params
-        
-        # 4. 기록
-        st.session_state['history'].append({
-            "time": datetime.datetime.now().strftime("%H:%M"),
-            "query": user_input,
-            "changes": ", ".join(changes) if changes else "변경 없음"
-        })
-        
-        if not changes:
-            st.warning("⚠️ 변경된 파라미터를 찾지 못했습니다. (기존 값 유지)")
-        else:
-            st.success(f"✅ 파라미터 업데이트: {', '.join(changes)}")
+    with st.spinner("AI가 기준값을 바탕으로 분석 중입니다..."):
+        try:
+            # 항상 REF_PARAMS를 기준으로 추출
+            new_params = extract_params_from_text(user_input)
+            st.session_state['current_params'] = new_params
+            
+            # 비용 계산
+            new_cost = calculate_total_cost(
+                new_params['lambda'], new_params['alpha'], new_params['mu'], new_params['sigma']
+            )
+            
+            # 기록 저장
+            st.session_state['history'].append({
+                "time": datetime.datetime.now().strftime("%H:%M"),
+                "query": user_input
+            })
+        except Exception as e:
+            st.error(f"오류 발생: {e}")
 
-# 결과 계산 및 표시
-curr = st.session_state['params']
-curr_cost = calculate_cost(curr['lambda'], curr['alpha'], curr['mu'], curr['sigma'])
-diff = curr_cost - REF_COST
-diff_pct = (diff / REF_COST) * 100
+# 현재 계산 결과
+curr = st.session_state['current_params']
+curr_cost = calculate_total_cost(curr['lambda'], curr['alpha'], curr['mu'], curr['sigma'])
+diff_pct = ((curr_cost - COST_REF) / COST_REF) * 100
 
-st.write("---")
-# 현재 파라미터 명시적 표시
-col_p1, col_p2, col_p3, col_p4 = st.columns(4)
-col_p1.metric("Lambda (λ)", f"{curr['lambda']}")
-col_p2.metric("Alpha (α)", f"{curr['alpha']}")
-col_p3.metric("Mean (μ)", f"{curr['mu']}")
-col_p4.metric("Sigma (σ)", f"{curr['sigma']}")
+st.divider()
+st.subheader("1️⃣ 비용 분석 및 단가표")
 
-# 비용 결과 표시
-st.subheader("📊 비용 분석 결과")
-c1, c2, c3 = st.columns(3)
-c1.metric("기준 비용 (Baseline)", f"${REF_COST:,.2f}")
-c2.metric("신규 비용 (Current)", f"${curr_cost:,.2f}", delta=f"{diff:,.2f}", delta_color="inverse")
-c3.metric("비용 증감율", f"{diff_pct:+.2f}%")
+# 메트릭
+c1, c2, c3, c4 = st.columns(4)
+c1.metric("적용 λ (Lambda)", f"{curr['lambda']}")
+c2.metric("적용 α (Alpha)", f"{curr['alpha']}")
+c3.metric("적용 μ (Mean)", f"{curr['mu']}")
+c4.metric("적용 σ (Sigma)", f"{curr['sigma']}")
 
-# 단가표 생성
+m1, m2, m3 = st.columns(3)
+m1.metric("기준 품질비용 (Fixed)", f"${COST_REF:,.2f}")
+m2.metric("신규 품질비용 (Current)", f"${curr_cost:,.2f}", delta=f"{curr_cost - COST_REF:,.2f}", delta_color="inverse")
+m3.metric("비용 변동률", f"{diff_pct:+.2f}%")
+
+# 단가표
 tiers = [
     {'Tier': 'Tier 1', 'k': 0.3, 'Desc': '전략 파트너'},
     {'Tier': 'Tier 2', 'k': 0.5, 'Desc': '주요 공급사'},
     {'Tier': 'Tier 3', 'k': 0.7, 'Desc': '일반 공급사'}
 ]
-
 data = []
 for t in tiers:
-    # 단가 조정 공식: -k * (비용증감율)
     adj = -t['k'] * diff_pct
-    
     direction = "변동 없음"
     if adj > 0.001: direction = "인상 (▲)"
     elif adj < -0.001: direction = "인하 (▼)"
-    
     data.append([t['Tier'], t['k'], f"{adj:+.2f}% {direction}", t['Desc']])
 
-st.subheader("💰 단가 조정 가이드라인")
 st.table(pd.DataFrame(data, columns=['Tier', '협상계수(k)', '조정률', '비고']))
+
+# ==========================================
+# 4. 4D Interactive Plot (Streamlit Slider 버전)
+# ==========================================
+st.divider()
+st.subheader("2️⃣ 4D Interactive Visualization")
+st.markdown("아래 슬라이더를 움직여 **결함 균질도(α)**와 **평탄도 산포(σ)**가 단가에 미치는 영향을 확인하세요.")
+
+# 4D Plot용 데이터 그리드 (미리 생성)
+l_vals = np.linspace(0.01, 0.10, 20)
+m_vals = np.linspace(1.2, 3.0, 20)
+L_3d, M_3d = np.meshgrid(l_vals, m_vals)
+
+# 슬라이더 (Streamlit Native Widget)
+c_s1, c_s2, c_s3 = st.columns(3)
+s_alpha = c_s1.slider("Cluster Parameter (α)", 1.0, 10.0, 4.2, 0.1)
+s_sigma = c_s2.slider("Flatness Sigma (σ)", 0.3, 1.25, 0.78, 0.05)
+s_k = c_s3.slider("Negotiation Factor (k)", 0.1, 1.0, 0.5, 0.1)
+
+# 3D Plotting
+fig = plt.figure(figsize=(10, 8))
+ax = fig.add_subplot(111, projection='3d')
+
+# Z축(단가 조정률) 계산
+Z_3d = np.zeros_like(L_3d)
+for i in range(L_3d.shape[0]):
+    for j in range(L_3d.shape[1]):
+        # 사용자가 슬라이더로 선택한 alpha, sigma 적용
+        c = calculate_total_cost(L_3d[i,j], s_alpha, M_3d[i,j], s_sigma)
+        # 단가 조정률
+        Z_3d[i,j] = -s_k * ((c - COST_REF) / COST_REF) * 100
+
+# 서피스 플롯
+surf = ax.plot_surface(L_3d, M_3d, Z_3d, cmap='coolwarm', edgecolor='none', alpha=0.85, vmin=-100, vmax=20)
+
+# 기준점 표시 (Baseline)
+# 현재 슬라이더 값이 Baseline 근처일 때만 별표 표시
+if np.isclose(s_alpha, REF_PARAMS['alpha'], atol=0.5) and np.isclose(s_sigma, REF_PARAMS['sigma'], atol=0.1):
+    ax.scatter(REF_PARAMS['lambda'], REF_PARAMS['mu'], 0, color='yellow', s=200, marker='*', edgecolors='black', label='Baseline', zorder=10)
+    ax.legend()
+
+ax.set_xlabel('Defect Density λ')
+ax.set_ylabel('Mean TTV μ')
+ax.set_zlabel('ΔPrice (%)')
+ax.set_title(f'Price Sensitivity Surface\n(α={s_alpha}, σ={s_sigma}, k={s_k})', fontsize=14)
+ax.set_zlim(-100, 20)
+
+# 🔹 요청하신 각도 적용 (왼쪽으로 90도 회전: 225도 -> 315도)
+# 원본 코드: azim=135 -> 90도 회전 요청 -> 225. 
+# 사용자가 "왼쪽으로 90도"라고 했고, "ax.view_init(elev=25, azim=315)" 코드를 주셨으므로 315로 설정합니다.
+ax.view_init(elev=25, azim=315)
+
+fig.colorbar(surf, shrink=0.5, aspect=10, pad=0.1, label='Price Adj (%)')
+st.pyplot(fig)
