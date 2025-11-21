@@ -191,7 +191,7 @@ st.table(pd.DataFrame(data, columns=['Tier', '협상계수(k)', '조정률', '�
 # ==========================================
 st.divider()
 st.subheader("2️⃣ 4D Interactive Visualization")
-st.markdown("아래 슬라이더를 움직여 **결함 균질도(α)**와 **평탄도 산포(σ)**가 단가에 미치는 영향을 확인하세요.")
+st.markdown("아래 슬라이더를 움직여 결함 균질도(α)와 평탄도 산포(σ)가 단가에 미치는 영향을 확인하세요.")
 
 # 4D Plot용 데이터 그리드 (미리 생성)
 l_vals = np.linspace(0.01, 0.10, 20)
