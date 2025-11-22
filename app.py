@@ -121,7 +121,7 @@ with st.sidebar:
         if i > 4: break
 
 # [메인 화면]
-st.title("🤖 웨이퍼 단가 계산기")
+st.title("🤖 웨이퍼 단가 계산기 by 샤리보")
 st.markdown(f"""
 **기준 파라미터 (Fixed Baseline):** `λ={REF_PARAMS['lambda']}`, `α={REF_PARAMS['alpha']}`, `μ={REF_PARAMS['mu']}`, `σ={REF_PARAMS['sigma']}`  
 """)
